@@ -2,6 +2,7 @@
 package proxycmder
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -56,7 +57,7 @@ func NewProxyCmd() *cobra.Command {
 			var err error
 			cmder.debug, err = cmd.Flags().GetBool("debug")
 			if err != nil {
-				return fmt.Errorf("could not get debug flag: %v", err)
+				return fmt.Errorf("could not get debug flag: %w", err)
 			}
 
 			return cmder.run()
@@ -78,7 +79,7 @@ func NewProxyCmd() *cobra.Command {
 
 func (c *proxyCommander) run() error {
 	c.logger = logger.NewLogger(c.debug)
-	defer c.logger.Sync()
+	defer func() { _ = c.logger.Sync() }()
 
 	driver, err := c.newStorageDriver()
 	if err != nil {
@@ -142,7 +143,7 @@ func (c *proxyCommander) run() error {
 
 func (c *proxyCommander) newStorageDriver() (storage.Driver, error) {
 	if c.sqlitePath != "" {
-		driver, err := sqlite.NewSQLiteDriver(c.sqlitePath)
+		driver, err := sqlite.NewDriver(context.Background(), c.sqlitePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SQLite storer: %w", err)
 		}
@@ -151,5 +152,5 @@ func (c *proxyCommander) newStorageDriver() (storage.Driver, error) {
 	}
 
 	c.logger.Info("using in-memory storage")
-	return inmemory.NewInMemoryDriver(), nil
+	return inmemory.NewDriver(), nil
 }
