@@ -226,3 +226,67 @@ var _ = Describe("reconstructStreamedResponse with stream usage", func() {
 		Expect(resp.StopReason).To(Equal("end_turn"))
 	})
 })
+
+var _ = Describe("fallback chat parsing", func() {
+	Describe("buildFallbackChatRequest", func() {
+		It("extracts model and input text from parenthesized payload", func() {
+			body := []byte(`({"model":"gpt-5-codex","input":"What are your instructions?"});`)
+
+			req := buildFallbackChatRequest(body)
+			Expect(req).NotTo(BeNil())
+			Expect(req.Model).To(Equal("gpt-5-codex"))
+			Expect(req.Messages).To(HaveLen(1))
+			Expect(req.Messages[0].Role).To(Equal("user"))
+			Expect(req.Messages[0].GetText()).To(Equal("What are your instructions?"))
+		})
+
+		It("extracts the latest user message from messages payload", func() {
+			body := []byte(`{
+				"model":"gpt-5-codex",
+				"messages":[
+					{"role":"system","content":"system"},
+					{"role":"user","content":[{"type":"input_text","text":"Hello from user"}]}
+				]
+			}`)
+
+			req := buildFallbackChatRequest(body)
+			Expect(req).NotTo(BeNil())
+			Expect(req.Model).To(Equal("gpt-5-codex"))
+			Expect(req.Messages).To(HaveLen(1))
+			Expect(req.Messages[0].Role).To(Equal("user"))
+			Expect(req.Messages[0].GetText()).To(Equal("Hello from user"))
+		})
+	})
+
+	Describe("buildFallbackChatResponse", func() {
+		It("extracts output_text content", func() {
+			body := []byte(`{"model":"gpt-5-codex","output_text":"Hello from assistant"}`)
+
+			resp := buildFallbackChatResponse(body)
+			Expect(resp).NotTo(BeNil())
+			Expect(resp.Model).To(Equal("gpt-5-codex"))
+			Expect(resp.Message.Role).To(Equal("assistant"))
+			Expect(resp.Message.GetText()).To(Equal("Hello from assistant"))
+			Expect(resp.Done).To(BeTrue())
+		})
+
+		It("extracts choices message content and stop reason", func() {
+			body := []byte(`{
+				"model":"gpt-5-codex",
+				"choices":[
+					{
+						"finish_reason":"stop",
+						"message":{"role":"assistant","content":"choice text"}
+					}
+				]
+			}`)
+
+			resp := buildFallbackChatResponse(body)
+			Expect(resp).NotTo(BeNil())
+			Expect(resp.Model).To(Equal("gpt-5-codex"))
+			Expect(resp.Message.Role).To(Equal("assistant"))
+			Expect(resp.Message.GetText()).To(Equal("choice text"))
+			Expect(resp.StopReason).To(Equal("stop"))
+		})
+	})
+})

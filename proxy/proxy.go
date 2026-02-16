@@ -165,11 +165,22 @@ func (p *Proxy) handleProxy(c *fiber.Ctx) error {
 		var err error
 		parsedReq, err = prov.ParseRequest(body)
 		if err != nil {
-			p.logger.Warn("failed to parse request",
-				zap.Error(err),
-				zap.String("provider", prov.Name()),
-				zap.String("agent", agentName),
-			)
+			parsedReq = buildFallbackChatRequest(body)
+			if parsedReq != nil {
+				p.logger.Debug("recovered request via fallback parser",
+					zap.String("provider", prov.Name()),
+					zap.String("agent", agentName),
+					zap.String("model", parsedReq.Model),
+					zap.Int("message_count", len(parsedReq.Messages)),
+				)
+			} else {
+				p.logger.Warn("failed to parse request",
+					zap.Error(err),
+					zap.String("provider", prov.Name()),
+					zap.String("agent", agentName),
+					zap.String("body_preview", previewForLog(body, 200)),
+				)
+			}
 		} else {
 			p.logger.Debug("parsed request",
 				zap.String("provider", prov.Name()),
@@ -250,12 +261,24 @@ func (p *Proxy) handleNonStreamingProxy(c *fiber.Ctx, path, method, upstreamURL 
 	if parsedReq != nil && httpResp.StatusCode == http.StatusOK {
 		parsedResp, err := prov.ParseResponse(respBody)
 		if err != nil {
-			p.logger.Warn("failed to parse response",
-				zap.Error(err),
-				zap.String("provider", prov.Name()),
-				zap.String("agent", agentName),
-			)
-		} else {
+			parsedResp = buildFallbackChatResponse(respBody)
+			if parsedResp != nil {
+				p.logger.Debug("recovered response via fallback parser",
+					zap.String("provider", prov.Name()),
+					zap.String("agent", agentName),
+					zap.String("model", parsedResp.Model),
+				)
+			} else {
+				p.logger.Warn("failed to parse response",
+					zap.Error(err),
+					zap.String("provider", prov.Name()),
+					zap.String("agent", agentName),
+					zap.String("body_preview", previewForLog(respBody, 200)),
+				)
+			}
+		}
+
+		if parsedResp != nil {
 			p.logger.Debug("received response from upstream",
 				zap.String("model", parsedResp.Model),
 				zap.String("provider", prov.Name()),
@@ -270,6 +293,11 @@ func (p *Proxy) handleNonStreamingProxy(c *fiber.Ctx, path, method, upstreamURL 
 				Req:       parsedReq,
 				Resp:      parsedResp,
 			})
+		} else {
+			p.logger.Warn("skipping async storage because response could not be parsed",
+				zap.String("provider", prov.Name()),
+				zap.String("agent", agentName),
+			)
 		}
 	}
 
@@ -539,6 +567,276 @@ func jsonInt(m map[string]any, key string) int {
 		return int(v)
 	}
 	return 0
+}
+
+func buildFallbackChatRequest(body []byte) *llm.ChatRequest {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil
+	}
+
+	model := ""
+	text := ""
+	if obj := normalizeJSONLikeObject(trimmed); obj != nil {
+		if m, ok := obj["model"].(string); ok {
+			model = m
+		}
+		text = extractRequestText(obj)
+	}
+
+	if text == "" {
+		text = previewForLog(trimmed, 4096)
+	}
+	if text == "" {
+		return nil
+	}
+
+	return &llm.ChatRequest{
+		Model:      model,
+		Messages:   []llm.Message{llm.NewTextMessage("user", text)},
+		RawRequest: append([]byte(nil), trimmed...),
+	}
+}
+
+func buildFallbackChatResponse(body []byte) *llm.ChatResponse {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil
+	}
+
+	model := ""
+	stopReason := ""
+	text := ""
+	if obj := normalizeJSONLikeObject(trimmed); obj != nil {
+		if m, ok := obj["model"].(string); ok {
+			model = m
+		}
+		text, stopReason = extractResponseText(obj)
+	}
+
+	if text == "" {
+		text = previewForLog(trimmed, 4096)
+	}
+	if text == "" {
+		return nil
+	}
+
+	return &llm.ChatResponse{
+		Model:       model,
+		Message:     llm.NewTextMessage("assistant", text),
+		Done:        true,
+		StopReason:  stopReason,
+		CreatedAt:   time.Now(),
+		RawResponse: append([]byte(nil), trimmed...),
+	}
+}
+
+func normalizeJSONLikeObject(payload []byte) map[string]any {
+	normalized := normalizeJSONLikePayload(payload)
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(normalized, &obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+func normalizeJSONLikePayload(payload []byte) []byte {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if json.Valid(trimmed) {
+		return trimmed
+	}
+
+	if decoded := decodeJSONWrappedString(trimmed); len(decoded) > 0 {
+		return decoded
+	}
+
+	if inner := extractParensPayload(trimmed); len(inner) > 0 {
+		if decoded := decodeJSONWrappedString(inner); len(decoded) > 0 {
+			return decoded
+		}
+		if json.Valid(inner) {
+			return inner
+		}
+		if candidate := extractJSONLikeCandidate(inner, '{', '}'); json.Valid(candidate) {
+			return candidate
+		}
+		if candidate := extractJSONLikeCandidate(inner, '[', ']'); json.Valid(candidate) {
+			return candidate
+		}
+	}
+
+	if candidate := extractJSONLikeCandidate(trimmed, '{', '}'); json.Valid(candidate) {
+		return candidate
+	}
+	if candidate := extractJSONLikeCandidate(trimmed, '[', ']'); json.Valid(candidate) {
+		return candidate
+	}
+
+	return nil
+}
+
+func decodeJSONWrappedString(payload []byte) []byte {
+	var decoded string
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return nil
+	}
+	trimmed := bytes.TrimSpace([]byte(decoded))
+	if json.Valid(trimmed) {
+		return trimmed
+	}
+	if candidate := extractJSONLikeCandidate(trimmed, '{', '}'); json.Valid(candidate) {
+		return candidate
+	}
+	if candidate := extractJSONLikeCandidate(trimmed, '[', ']'); json.Valid(candidate) {
+		return candidate
+	}
+	return nil
+}
+
+func extractParensPayload(payload []byte) []byte {
+	start := bytes.IndexByte(payload, '(')
+	end := bytes.LastIndexByte(payload, ')')
+	if start == -1 || end == -1 || end <= start {
+		return nil
+	}
+	return bytes.TrimSpace(payload[start+1 : end])
+}
+
+func extractJSONLikeCandidate(payload []byte, open, close byte) []byte {
+	start := bytes.IndexByte(payload, open)
+	end := bytes.LastIndexByte(payload, close)
+	if start == -1 || end == -1 || end <= start {
+		return nil
+	}
+	return bytes.TrimSpace(payload[start : end+1])
+}
+
+func extractRequestText(obj map[string]any) string {
+	if txt := extractTextValue(obj["input"]); txt != "" {
+		return txt
+	}
+
+	if msgs, ok := obj["messages"].([]any); ok {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			msg, ok := msgs[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := msg["role"].(string)
+			if role == "user" {
+				if txt := extractTextValue(msg["content"]); txt != "" {
+					return txt
+				}
+			}
+		}
+		for _, item := range msgs {
+			msg, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if txt := extractTextValue(msg["content"]); txt != "" {
+				return txt
+			}
+		}
+	}
+
+	if txt := extractTextValue(obj["prompt"]); txt != "" {
+		return txt
+	}
+
+	return ""
+}
+
+func extractResponseText(obj map[string]any) (string, string) {
+	if txt := extractTextValue(obj["output_text"]); txt != "" {
+		return txt, ""
+	}
+
+	if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			stopReason, _ := choice["finish_reason"].(string)
+			if msg, ok := choice["message"].(map[string]any); ok {
+				if txt := extractTextValue(msg["content"]); txt != "" {
+					return txt, stopReason
+				}
+			}
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				if txt := extractTextValue(delta["content"]); txt != "" {
+					return txt, stopReason
+				}
+			}
+		}
+	}
+
+	if output, ok := obj["output"].([]any); ok {
+		for _, item := range output {
+			msg, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if txt := extractTextValue(msg["content"]); txt != "" {
+				return txt, ""
+			}
+		}
+	}
+
+	if txt := extractTextValue(obj["response"]); txt != "" {
+		return txt, ""
+	}
+
+	return "", ""
+}
+
+func extractTextValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			if txt := extractTextValue(item); txt != "" {
+				parts = append(parts, txt)
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, " "))
+	case map[string]any:
+		if txt := extractTextValue(t["text"]); txt != "" {
+			return txt
+		}
+		if txt := extractTextValue(t["content"]); txt != "" {
+			return txt
+		}
+		if txt := extractTextValue(t["input"]); txt != "" {
+			return txt
+		}
+		if txt := extractTextValue(t["parts"]); txt != "" {
+			return txt
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func previewForLog(payload []byte, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if len(trimmed) > max {
+		return string(trimmed[:max]) + "...(truncated)"
+	}
+	return string(trimmed)
 }
 
 // enqueueStreamedResponse handles post-stream telemetry: logging and
