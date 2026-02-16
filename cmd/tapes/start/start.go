@@ -2,6 +2,7 @@
 package startcmder
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -824,6 +825,15 @@ func (c *startCommander) configureCodexAuth() (func() error, error) {
 	}
 
 	restore := func() error {
+		current, err := os.ReadFile(authPath)
+		if err != nil {
+			return fmt.Errorf("reading codex auth for restore: %w", err)
+		}
+		// If codex (or the user) changed auth.json while running, keep that
+		// newer state instead of clobbering it with a stale snapshot.
+		if !bytes.Equal(current, updated) {
+			return nil
+		}
 		return os.WriteFile(authPath, original, 0o600)
 	}
 

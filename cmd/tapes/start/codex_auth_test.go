@@ -111,6 +111,33 @@ var _ = Describe("codex auth behavior", func() {
 			Expect(mustReadFile(authPath)).To(Equal(original))
 		})
 
+		It("does not clobber auth.json if codex rewrites it during runtime", func() {
+			authPath := writeCodexAuthFile(tmpHome, []byte(codexOAuthAuthFixture))
+			seedOpenAIKey(tmpConfigDir, "sk-svcacct-test")
+
+			cmder := &startCommander{configDir: tmpConfigDir}
+			cleanup, err := cmder.configureCodexAuth()
+			Expect(err).NotTo(HaveOccurred())
+
+			authFromPatch := decodeAuthMap(mustReadFile(authPath))
+			Expect(authFromPatch).NotTo(HaveKey("tokens"))
+			Expect(extractAPIKey(authFromPatch)).To(Equal("sk-svcacct-test"))
+
+			rewrittenByCodex := []byte(`{
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "access_token": "oa-new",
+    "refresh_token": "oa-refresh-new",
+    "scopes": ["openid", "profile", "email", "offline_access"]
+  },
+  "other": "preserve-me"
+}`)
+			Expect(os.WriteFile(authPath, rewrittenByCodex, 0o600)).To(Succeed())
+
+			Expect(cleanup()).To(Succeed())
+			Expect(mustReadFile(authPath)).To(Equal(rewrittenByCodex))
+		})
+
 		It("is a no-op when ~/.codex/auth.json is missing", func() {
 			seedOpenAIKey(tmpConfigDir, "sk-svcacct-test")
 
