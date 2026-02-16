@@ -303,6 +303,9 @@ func (c *startCommander) runAgent(ctx context.Context, agent string) error {
 	}
 
 	cmd.Env = c.injectCredentials(cmd.Env)
+	if agent == agentCodex && c.effectiveCodexAuthMode() == codexAuthModeOAuth {
+		cmd.Env = removeEnvVar(cmd.Env, "OPENAI_API_KEY")
+	}
 
 	if err := cmd.Start(); err != nil {
 		_ = cleanup()
@@ -907,6 +910,18 @@ func (c *startCommander) injectCredentials(env []string) []string {
 	}
 
 	return env
+}
+
+func removeEnvVar(env []string, key string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		k, _, ok := strings.Cut(e, "=")
+		if ok && k == key {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
 }
 
 func isSupportedAgent(agent string) bool {

@@ -74,6 +74,7 @@ var _ = Describe("codex auth behavior", func() {
 		}
 
 		Expect(os.Unsetenv("CODEX_CAPTURE_PATH")).To(Succeed())
+		Expect(os.Unsetenv("CODEX_CAPTURE_OPENAI_ENV_PATH")).To(Succeed())
 		Expect(os.RemoveAll(tmpHome)).To(Succeed())
 		Expect(os.RemoveAll(tmpConfigDir)).To(Succeed())
 		Expect(os.RemoveAll(tmpBinDir)).To(Succeed())
@@ -232,6 +233,16 @@ var _ = Describe("codex auth behavior", func() {
 			Expect(extractAPIKey(authAtRuntime)).To(BeEmpty())
 			Expect(mustReadFile(authPath)).To(Equal(original))
 		})
+
+		It("oauth mode does not inject OPENAI_API_KEY into codex env", func() {
+			writeCodexAuthFile(tmpHome, []byte(codexOAuthAuthFixture))
+			seedOpenAIKey(tmpConfigDir, "sk-svcacct-test")
+
+			_, capturedOK, openAIEnv, err := runStartCodexWithModeAndCaptureOpenAIEnv(tmpConfigDir, "oauth")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(capturedOK).To(BeTrue())
+			Expect(openAIEnv).To(BeEmpty())
+		})
 	})
 })
 
@@ -242,6 +253,9 @@ set -eu
 auth_path="${HOME}/.codex/auth.json"
 if [ -n "${CODEX_CAPTURE_PATH:-}" ] && [ -f "${auth_path}" ]; then
   cp "${auth_path}" "${CODEX_CAPTURE_PATH}"
+fi
+if [ -n "${CODEX_CAPTURE_OPENAI_ENV_PATH:-}" ]; then
+  printf '%s' "${OPENAI_API_KEY:-}" > "${CODEX_CAPTURE_OPENAI_ENV_PATH}"
 fi
 exit 0
 `
@@ -300,6 +314,34 @@ func runStartCodexWithMode(configDir, mode string) ([]byte, bool, error) {
 	}
 
 	return captured, true, err
+}
+
+func runStartCodexWithModeAndCaptureOpenAIEnv(configDir, mode string) ([]byte, bool, string, error) {
+	capturePath := filepath.Join(configDir, "captured-auth.json")
+	captureOpenAIEnvPath := filepath.Join(configDir, "captured-openai-env.txt")
+	Expect(os.Setenv("CODEX_CAPTURE_PATH", capturePath)).To(Succeed())
+	Expect(os.Setenv("CODEX_CAPTURE_OPENAI_ENV_PATH", captureOpenAIEnvPath)).To(Succeed())
+
+	cmd := NewStartCmd()
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.PersistentFlags().Bool("debug", false, "Enable debug logging")
+	cmd.PersistentFlags().String("config-dir", "", "Override path to .tapes/ config directory")
+	cmd.SetArgs([]string{"codex", "--config-dir", configDir, "--codex-auth-mode", mode})
+
+	err := cmd.Execute()
+
+	captured, readErr := os.ReadFile(capturePath)
+	if readErr != nil {
+		return nil, false, "", err
+	}
+
+	openAIEnv, readOpenAIEnvErr := os.ReadFile(captureOpenAIEnvPath)
+	if readOpenAIEnvErr != nil {
+		return captured, true, "", err
+	}
+
+	return captured, true, string(openAIEnv), err
 }
 
 func decodeAuthMap(data []byte) map[string]json.RawMessage {
