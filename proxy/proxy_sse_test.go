@@ -255,3 +255,57 @@ var _ = Describe("SSE Streaming Proxy", func() {
 		})
 	})
 })
+
+var _ = Describe("OpenAI Non-Streaming Proxy", func() {
+	var (
+		p        *Proxy
+		driver   *inmemory.Driver
+		upstream *httptest.Server
+	)
+
+	AfterEach(func() {
+		if p != nil {
+			p.Close()
+		}
+		if upstream != nil {
+			upstream.Close()
+		}
+	})
+
+	It("stores a turn for parenthesized codex-style request payloads", func() {
+		upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"id":"chatcmpl-123",
+				"object":"chat.completion",
+				"created":1677858242,
+				"model":"gpt-4",
+				"choices":[{"index":0,"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+			}`))
+		}))
+		p, driver = newOpenAITestProxy(upstream.URL)
+
+		reqBody := `({"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]});`
+		resp, err := p.server.Test(httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(reqBody)))
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+
+		p.Close()
+		p = nil
+
+		ctx := GinkgoT().Context()
+		leaves, err := driver.Leaves(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(leaves).To(HaveLen(1))
+		Expect(leaves[0].Bucket.Role).To(Equal("assistant"))
+		Expect(leaves[0].Bucket.ExtractText()).To(Equal("Hi there"))
+
+		ancestry, err := driver.Ancestry(ctx, leaves[0].Hash)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ancestry).To(HaveLen(2))
+		Expect(ancestry[1].Bucket.Role).To(Equal("user"))
+		Expect(ancestry[1].Bucket.ExtractText()).To(Equal("Hello"))
+	})
+})

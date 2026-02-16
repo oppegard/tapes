@@ -241,6 +241,58 @@ var _ = Describe("OpenAI Provider", func() {
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		Context("with Responses API request format", func() {
+			It("parses input string as a user message", func() {
+				payload := []byte(`{
+						"model": "gpt-4.1",
+						"input": "Hello from responses"
+					}`)
+
+				req, err := p.ParseRequest(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Model).To(Equal("gpt-4.1"))
+				Expect(req.Messages).To(HaveLen(1))
+				Expect(req.Messages[0].Role).To(Equal("user"))
+				Expect(req.Messages[0].GetText()).To(Equal("Hello from responses"))
+			})
+		})
+
+		Context("with wrapped JSON payload", func() {
+			It("recovers and parses wrapped JSON", func() {
+				payload := []byte(`({"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]})`)
+
+				req, err := p.ParseRequest(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Model).To(Equal("gpt-4"))
+				Expect(req.Messages).To(HaveLen(1))
+				Expect(req.Messages[0].GetText()).To(Equal("Hello"))
+			})
+		})
+
+		Context("with parenthesized JSON payload with trailing semicolon", func() {
+			It("recovers and parses the payload", func() {
+				payload := []byte(`({"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]});`)
+
+				req, err := p.ParseRequest(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Model).To(Equal("gpt-4"))
+				Expect(req.Messages).To(HaveLen(1))
+				Expect(req.Messages[0].GetText()).To(Equal("Hello"))
+			})
+		})
+
+		Context("with parenthesized quoted JSON payload", func() {
+			It("decodes and parses the payload", func() {
+				payload := []byte(`("{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}");`)
+
+				req, err := p.ParseRequest(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(req.Model).To(Equal("gpt-4"))
+				Expect(req.Messages).To(HaveLen(1))
+				Expect(req.Messages[0].GetText()).To(Equal("Hello"))
+			})
+		})
 	})
 
 	Describe("ParseResponse", func() {
@@ -396,6 +448,56 @@ var _ = Describe("OpenAI Provider", func() {
 				payload := []byte(`not valid json`)
 				_, err := p.ParseResponse(payload)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("with Responses API response format", func() {
+			It("parses output_text and usage tokens", func() {
+				payload := []byte(`{
+						"id": "resp_123",
+						"object": "response",
+						"created": 1677858242,
+						"model": "gpt-4.1",
+						"output_text": "Hello from responses output",
+						"usage": {
+							"input_tokens": 12,
+							"output_tokens": 8,
+							"total_tokens": 20
+						}
+					}`)
+
+				resp, err := p.ParseResponse(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.Model).To(Equal("gpt-4.1"))
+				Expect(resp.Message.Role).To(Equal("assistant"))
+				Expect(resp.Message.GetText()).To(Equal("Hello from responses output"))
+				Expect(resp.Usage).NotTo(BeNil())
+				Expect(resp.Usage.PromptTokens).To(Equal(12))
+				Expect(resp.Usage.CompletionTokens).To(Equal(8))
+				Expect(resp.Usage.TotalTokens).To(Equal(20))
+			})
+
+			It("parses output message content when output_text is absent", func() {
+				payload := []byte(`{
+						"id": "resp_456",
+						"object": "response",
+						"created": 1677858242,
+						"model": "gpt-4.1",
+						"output": [
+							{
+								"type": "message",
+								"role": "assistant",
+								"content": [
+									{"type": "output_text", "text": "Hello from output array"}
+								]
+							}
+						]
+					}`)
+
+				resp, err := p.ParseResponse(payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.Message.Role).To(Equal("assistant"))
+				Expect(resp.Message.GetText()).To(Equal("Hello from output array"))
 			})
 		})
 	})
