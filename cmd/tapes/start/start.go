@@ -60,6 +60,10 @@ Examples:
 	codexAuthModeAuto   = "auto"
 	codexAuthModeAPIKey = "api-key"
 	codexAuthModeOAuth  = "oauth"
+
+	openAIUpstreamURL     = "https://api.openai.com/v1"
+	codexOAuthUpstreamURL = "https://chatgpt.com/backend-api/codex"
+	anthropicUpstreamURL  = "https://api.anthropic.com"
 )
 
 type startCommander struct {
@@ -182,6 +186,32 @@ func (c *startCommander) effectiveCodexAuthMode() string {
 		return codexAuthModeAuto
 	}
 	return mode
+}
+
+func (c *startCommander) hasStoredOpenAIKey() bool {
+	mgr, err := credentials.NewManager(c.configDir)
+	if err != nil {
+		return false
+	}
+	apiKey, err := mgr.GetKey("openai")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(apiKey) != ""
+}
+
+func (c *startCommander) resolveCodexAgentRoute() proxy.AgentRoute {
+	switch c.effectiveCodexAuthMode() {
+	case codexAuthModeAPIKey:
+		return proxy.AgentRoute{ProviderType: "openai", UpstreamURL: openAIUpstreamURL}
+	case codexAuthModeOAuth:
+		return proxy.AgentRoute{ProviderType: "openai", UpstreamURL: codexOAuthUpstreamURL}
+	default:
+		if c.hasStoredOpenAIKey() {
+			return proxy.AgentRoute{ProviderType: "openai", UpstreamURL: openAIUpstreamURL}
+		}
+		return proxy.AgentRoute{ProviderType: "openai", UpstreamURL: codexOAuthUpstreamURL}
+	}
 }
 
 func (c *startCommander) runLogs(ctx context.Context, out io.Writer) error {
@@ -433,19 +463,20 @@ func (c *startCommander) runServices(ctx context.Context, manager *start.Manager
 	}
 
 	openCodeRoute := resolveOpenCodeAgentRoute(startCfg)
+	codexRoute := c.resolveCodexAgentRoute()
 
 	proxyConfig := proxy.Config{
 		ListenAddr:   proxyListener.Addr().String(),
 		UpstreamURL:  startCfg.DefaultUpstream,
 		ProviderType: startCfg.DefaultProvider,
 		AgentRoutes: map[string]proxy.AgentRoute{
-			agentClaude:   {ProviderType: "anthropic", UpstreamURL: "https://api.anthropic.com"},
+			agentClaude:   {ProviderType: "anthropic", UpstreamURL: anthropicUpstreamURL},
 			agentOpenCode: openCodeRoute,
-			agentCodex:    {ProviderType: "openai", UpstreamURL: "https://api.openai.com/v1"},
+			agentCodex:    codexRoute,
 		},
 		ProviderUpstreams: map[string]string{
-			"anthropic": "https://api.anthropic.com",
-			"openai":    "https://api.openai.com/v1",
+			"anthropic": anthropicUpstreamURL,
+			"openai":    openAIUpstreamURL,
 			"ollama":    startCfg.OllamaUpstream,
 		},
 		VectorDriver: vectorDriver,
@@ -580,6 +611,7 @@ func (c *startCommander) spawnDaemon(ctx context.Context, manager *start.Manager
 	if c.debug {
 		args = append(args, "--debug")
 	}
+	args = append(args, "--codex-auth-mode", c.effectiveCodexAuthMode())
 	if c.configDir != "" {
 		args = append(args, "--config-dir", c.configDir)
 	}
@@ -1221,14 +1253,14 @@ func resolveOpenCodeAgentRoute(cfg *startConfig) proxy.AgentRoute {
 	}
 
 	upstreams := map[string]string{
-		"anthropic": "https://api.anthropic.com",
-		"openai":    "https://api.openai.com/v1",
+		"anthropic": anthropicUpstreamURL,
+		"openai":    openAIUpstreamURL,
 		"ollama":    cfg.OllamaUpstream,
 	}
 
 	upstream, ok := upstreams[provider]
 	if !ok {
-		upstream = "https://api.anthropic.com"
+		upstream = anthropicUpstreamURL
 		provider = "anthropic"
 	}
 

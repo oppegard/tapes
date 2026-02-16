@@ -186,6 +186,56 @@ var _ = Describe("injectCredentials", func() {
 	})
 })
 
+var _ = Describe("resolveCodexAgentRoute", func() {
+	var tmpDir string
+
+	BeforeEach(func() {
+		var err error
+		tmpDir, err = os.MkdirTemp("", "tapes-codex-route-*")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(os.RemoveAll(tmpDir)).To(Succeed())
+	})
+
+	It("uses chatgpt codex upstream in oauth mode", func() {
+		mgr, err := credentials.NewManager(tmpDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.SetKey("openai", "sk-test")).To(Succeed())
+
+		cmder := &startCommander{configDir: tmpDir, codexAuthMode: codexAuthModeOAuth}
+		route := cmder.resolveCodexAgentRoute()
+		Expect(route.ProviderType).To(Equal("openai"))
+		Expect(route.UpstreamURL).To(Equal(codexOAuthUpstreamURL))
+	})
+
+	It("uses openai api upstream in api-key mode", func() {
+		cmder := &startCommander{configDir: tmpDir, codexAuthMode: codexAuthModeAPIKey}
+		route := cmder.resolveCodexAgentRoute()
+		Expect(route.ProviderType).To(Equal("openai"))
+		Expect(route.UpstreamURL).To(Equal(openAIUpstreamURL))
+	})
+
+	It("uses chatgpt codex upstream in auto mode when no key is stored", func() {
+		cmder := &startCommander{configDir: tmpDir, codexAuthMode: codexAuthModeAuto}
+		route := cmder.resolveCodexAgentRoute()
+		Expect(route.ProviderType).To(Equal("openai"))
+		Expect(route.UpstreamURL).To(Equal(codexOAuthUpstreamURL))
+	})
+
+	It("uses openai api upstream in auto mode when key is stored", func() {
+		mgr, err := credentials.NewManager(tmpDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.SetKey("openai", "sk-test")).To(Succeed())
+
+		cmder := &startCommander{configDir: tmpDir, codexAuthMode: codexAuthModeAuto}
+		route := cmder.resolveCodexAgentRoute()
+		Expect(route.ProviderType).To(Equal("openai"))
+		Expect(route.UpstreamURL).To(Equal(openAIUpstreamURL))
+	})
+})
+
 func appendToFile(path string, data []byte) error {
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
