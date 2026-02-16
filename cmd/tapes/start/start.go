@@ -55,15 +55,20 @@ Examples:
 	agentClaude   = "claude"
 	agentOpenCode = "opencode"
 	agentCodex    = "codex"
+
+	codexAuthModeAuto   = "auto"
+	codexAuthModeAPIKey = "api-key"
+	codexAuthModeOAuth  = "oauth"
 )
 
 type startCommander struct {
-	debug     bool
-	configDir string
-	logs      bool
-	daemon    bool
-	provider  string
-	model     string
+	debug         bool
+	configDir     string
+	logs          bool
+	daemon        bool
+	provider      string
+	model         string
+	codexAuthMode string
 }
 
 type startConfig struct {
@@ -81,7 +86,9 @@ type startConfig struct {
 }
 
 func NewStartCmd() *cobra.Command {
-	cmder := &startCommander{}
+	cmder := &startCommander{
+		codexAuthMode: codexAuthModeAuto,
+	}
 
 	cmd := &cobra.Command{
 		Use:   "start [agent]",
@@ -130,8 +137,50 @@ func NewStartCmd() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("daemon")
 	cmd.Flags().StringVar(&cmder.provider, "provider", "", "LLM provider for opencode (anthropic, openai, ollama)")
 	cmd.Flags().StringVar(&cmder.model, "model", "", "Model for opencode (e.g. claude-sonnet-4-5)")
+	cmd.Flags().Var(newCodexAuthModeFlagValue(&cmder.codexAuthMode), "codex-auth-mode", "Codex auth mode: auto|api-key|oauth")
 
 	return cmd
+}
+
+type codexAuthModeFlagValue struct {
+	target *string
+}
+
+func newCodexAuthModeFlagValue(target *string) *codexAuthModeFlagValue {
+	return &codexAuthModeFlagValue{target: target}
+}
+
+func (v *codexAuthModeFlagValue) Set(s string) error {
+	mode := strings.ToLower(strings.TrimSpace(s))
+	switch mode {
+	case codexAuthModeAuto, codexAuthModeAPIKey, codexAuthModeOAuth:
+		*v.target = mode
+		return nil
+	default:
+		return fmt.Errorf("invalid codex auth mode %q (allowed: auto, api-key, oauth)", s)
+	}
+}
+
+func (v *codexAuthModeFlagValue) String() string {
+	if v == nil || v.target == nil {
+		return codexAuthModeAuto
+	}
+	if *v.target == "" {
+		return codexAuthModeAuto
+	}
+	return *v.target
+}
+
+func (v *codexAuthModeFlagValue) Type() string {
+	return "codex-auth-mode"
+}
+
+func (c *startCommander) effectiveCodexAuthMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.codexAuthMode))
+	if mode == "" {
+		return codexAuthModeAuto
+	}
+	return mode
 }
 
 func (c *startCommander) runLogs(ctx context.Context, out io.Writer) error {
@@ -738,6 +787,11 @@ func (c *startCommander) newVectorAndEmbedder(cfg *startConfig, zapLogger *zap.L
 // original auth.json contents.
 func (c *startCommander) configureCodexAuth() (func() error, error) {
 	noop := func() error { return nil }
+	mode := c.effectiveCodexAuthMode()
+
+	if mode == codexAuthModeOAuth {
+		return noop, nil
+	}
 
 	mgr, err := credentials.NewManager(c.configDir)
 	if err != nil {
@@ -749,6 +803,9 @@ func (c *startCommander) configureCodexAuth() (func() error, error) {
 		return noop, errors.New("run 'tapes auth openai' with a service account key (sk-svcacct-...) before starting codex")
 	}
 	if apiKey == "" {
+		if mode == codexAuthModeAuto {
+			return noop, nil
+		}
 		return noop, errors.New("no OpenAI API key found — run 'tapes auth openai' with a service account key first")
 	}
 

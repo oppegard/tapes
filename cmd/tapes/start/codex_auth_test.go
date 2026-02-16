@@ -261,6 +261,7 @@ func runStartCodexWithMode(configDir, mode string) ([]byte, bool, error) {
 	cmd := NewStartCmd()
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
+	cmd.PersistentFlags().Bool("debug", false, "Enable debug logging")
 	cmd.PersistentFlags().String("config-dir", "", "Override path to .tapes/ config directory")
 	cmd.SetArgs([]string{"codex", "--config-dir", configDir, "--codex-auth-mode", mode})
 
