@@ -15,6 +15,7 @@ import (
 	servecmder "github.com/papercomputeco/tapes/cmd/tapes/serve"
 	startcmder "github.com/papercomputeco/tapes/cmd/tapes/start"
 	statuscmder "github.com/papercomputeco/tapes/cmd/tapes/status"
+	synccmder "github.com/papercomputeco/tapes/cmd/tapes/sync"
 	versioncmder "github.com/papercomputeco/tapes/cmd/version"
 )
 
@@ -62,6 +63,7 @@ func NewTapesCmd() *cobra.Command {
 	cmd.PersistentFlags().String("config-dir", "", "Override path to .tapes/ config directory")
 
 	// Add subcommands
+	cmd.AddCommand(synccmder.NewSyncCmd())
 	cmd.AddCommand(chatcmder.NewChatCmd())
 	cmd.AddCommand(checkoutcmder.NewCheckoutCmd())
 	cmd.AddCommand(configcmder.NewConfigCmd())

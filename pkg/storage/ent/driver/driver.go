@@ -225,6 +225,33 @@ func (ed *EntDriver) Depth(ctx context.Context, hash string) (int, error) {
 	return len(path) - 1, nil
 }
 
+// UpdateUsage updates only the token usage fields on an existing node by hash.
+func (ed *EntDriver) UpdateUsage(ctx context.Context, hash string, usage *llm.Usage) error {
+	if usage == nil {
+		return errors.New("cannot update with nil usage")
+	}
+
+	update := ed.Client.Node.UpdateOneID(hash)
+
+	if usage.PromptTokens > 0 {
+		update.SetPromptTokens(usage.PromptTokens)
+	}
+	if usage.CompletionTokens > 0 {
+		update.SetCompletionTokens(usage.CompletionTokens)
+	}
+	if usage.TotalTokens > 0 {
+		update.SetTotalTokens(usage.TotalTokens)
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		update.SetCacheCreationInputTokens(usage.CacheCreationInputTokens)
+	}
+	if usage.CacheReadInputTokens > 0 {
+		update.SetCacheReadInputTokens(usage.CacheReadInputTokens)
+	}
+
+	return update.Exec(ctx)
+}
+
 // Close closes the database connection.
 func (ed *EntDriver) Close() error {
 	return ed.Client.Close()
