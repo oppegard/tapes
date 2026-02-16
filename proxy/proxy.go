@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
@@ -587,6 +589,7 @@ func buildFallbackChatRequest(body []byte) *llm.ChatRequest {
 	if text == "" {
 		text = previewForLog(trimmed, 4096)
 	}
+	text = sanitizeText(text)
 	if text == "" {
 		return nil
 	}
@@ -617,6 +620,7 @@ func buildFallbackChatResponse(body []byte) *llm.ChatResponse {
 	if text == "" {
 		text = previewForLog(trimmed, 4096)
 	}
+	text = sanitizeText(text)
 	if text == "" {
 		return nil
 	}
@@ -797,7 +801,7 @@ func extractResponseText(obj map[string]any) (string, string) {
 func extractTextValue(v any) string {
 	switch t := v.(type) {
 	case string:
-		return strings.TrimSpace(t)
+		return sanitizeText(strings.TrimSpace(t))
 	case []any:
 		parts := make([]string, 0, len(t))
 		for _, item := range t {
@@ -833,10 +837,28 @@ func previewForLog(payload []byte, max int) string {
 	if len(trimmed) == 0 {
 		return ""
 	}
-	if len(trimmed) > max {
-		return string(trimmed[:max]) + "...(truncated)"
+
+	if utf8.Valid(trimmed) {
+		if len(trimmed) > max {
+			return sanitizeText(string(trimmed[:max])) + "...(truncated)"
+		}
+		return sanitizeText(string(trimmed))
 	}
-	return string(trimmed)
+
+	if len(trimmed) > max {
+		trimmed = trimmed[:max]
+	}
+	return "base64:" + base64.StdEncoding.EncodeToString(trimmed) + "...(truncated)"
+}
+
+func sanitizeText(s string) string {
+	if s == "" {
+		return ""
+	}
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 // enqueueStreamedResponse handles post-stream telemetry: logging and

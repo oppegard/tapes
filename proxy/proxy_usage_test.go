@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"unicode/utf8"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -256,6 +258,15 @@ var _ = Describe("fallback chat parsing", func() {
 			Expect(req.Messages[0].Role).To(Equal("user"))
 			Expect(req.Messages[0].GetText()).To(Equal("Hello from user"))
 		})
+
+		It("sanitizes non-UTF8 fallback text", func() {
+			body := []byte{0xff, 0xfe, 0xfd, 'x'}
+
+			req := buildFallbackChatRequest(body)
+			Expect(req).NotTo(BeNil())
+			Expect(req.Messages).To(HaveLen(1))
+			Expect(utf8.ValidString(req.Messages[0].GetText())).To(BeTrue())
+		})
 	})
 
 	Describe("buildFallbackChatResponse", func() {
@@ -287,6 +298,15 @@ var _ = Describe("fallback chat parsing", func() {
 			Expect(resp.Message.Role).To(Equal("assistant"))
 			Expect(resp.Message.GetText()).To(Equal("choice text"))
 			Expect(resp.StopReason).To(Equal("stop"))
+		})
+
+		It("sanitizes non-UTF8 fallback text", func() {
+			body := []byte{0xff, 0xfe, 0xfd, 'y'}
+
+			resp := buildFallbackChatResponse(body)
+			Expect(resp).NotTo(BeNil())
+			Expect(resp.Message.Role).To(Equal("assistant"))
+			Expect(utf8.ValidString(resp.Message.GetText())).To(BeTrue())
 		})
 	})
 })
