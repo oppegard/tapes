@@ -61,6 +61,30 @@ api_key = "sk-test-key"
 			Expect(creds.Providers["openai"].APIKey).To(Equal("sk-test-key"))
 		})
 
+		It("loads existing OAuth credentials", func() {
+			data := `version = 0
+
+[providers.openai.oauth]
+access_token = "access-123"
+refresh_token = "refresh-123"
+token_type = "Bearer"
+scope = "openid profile"
+expiry_unix = 1712345678
+`
+			err := os.WriteFile(filepath.Join(tmpDir, "credentials.toml"), []byte(data), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			creds, err := mgr.Load()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(creds.Providers).To(HaveKey("openai"))
+			Expect(creds.Providers["openai"].OAuth).NotTo(BeNil())
+			Expect(creds.Providers["openai"].OAuth.AccessToken).To(Equal("access-123"))
+			Expect(creds.Providers["openai"].OAuth.RefreshToken).To(Equal("refresh-123"))
+		})
+
 		It("returns error for malformed TOML", func() {
 			err := os.WriteFile(filepath.Join(tmpDir, "credentials.toml"), []byte("not valid [[["), 0o600)
 			Expect(err).NotTo(HaveOccurred())
@@ -129,6 +153,28 @@ api_key = "sk-test-key"
 			Expect(key).To(Equal("sk-new"))
 		})
 
+		It("clears OAuth credentials when storing API key", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = mgr.SetOAuth("openai", &credentials.OAuthCredential{
+				AccessToken:  "access-before",
+				RefreshToken: "refresh-before",
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = mgr.SetKey("openai", "sk-after")
+			Expect(err).NotTo(HaveOccurred())
+
+			key, err := mgr.GetKey("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(Equal("sk-after"))
+
+			oauth, err := mgr.GetOAuth("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oauth).To(BeNil())
+		})
+
 		It("preserves other provider keys", func() {
 			mgr, err := credentials.NewManager(tmpDir)
 			Expect(err).NotTo(HaveOccurred())
@@ -157,6 +203,72 @@ api_key = "sk-test-key"
 			key, err := mgr.GetKey("nonexistent")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(BeEmpty())
+		})
+	})
+
+	Describe("SetOAuth/GetOAuth", func() {
+		It("stores and returns OAuth credentials", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			input := &credentials.OAuthCredential{
+				AccessToken:  "access-abc",
+				RefreshToken: "refresh-abc",
+				TokenType:    "Bearer",
+				Scope:        "openid offline_access",
+				ExpiryUnix:   1712345678,
+			}
+
+			Expect(mgr.SetOAuth("openai", input)).To(Succeed())
+
+			got, err := mgr.GetOAuth("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).NotTo(BeNil())
+			Expect(*got).To(Equal(*input))
+		})
+
+		It("clears API key when storing OAuth credentials", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.SetKey("openai", "sk-before")).To(Succeed())
+			Expect(mgr.SetOAuth("openai", &credentials.OAuthCredential{
+				AccessToken: "access-after",
+			})).To(Succeed())
+
+			key, err := mgr.GetKey("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(key).To(BeEmpty())
+
+			oauth, err := mgr.GetOAuth("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(oauth).NotTo(BeNil())
+			Expect(oauth.AccessToken).To(Equal("access-after"))
+		})
+
+		It("returns error for nil OAuth credentials", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = mgr.SetOAuth("openai", nil)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("returns error for empty OAuth access token", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = mgr.SetOAuth("openai", &credentials.OAuthCredential{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("returns nil for provider without OAuth credentials", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			got, err := mgr.GetOAuth("openai")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeNil())
 		})
 	})
 
@@ -207,6 +319,19 @@ api_key = "sk-test-key"
 			providers, err := mgr.ListProviders()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(providers).To(Equal([]string{"anthropic", "openai"}))
+		})
+
+		It("includes provider with OAuth-only credentials", func() {
+			mgr, err := credentials.NewManager(tmpDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.SetOAuth("openai", &credentials.OAuthCredential{
+				AccessToken: "access-only",
+			})).To(Succeed())
+
+			providers, err := mgr.ListProviders()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(providers).To(Equal([]string{"openai"}))
 		})
 	})
 })

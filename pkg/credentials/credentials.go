@@ -112,7 +112,36 @@ func (m *Manager) SetKey(provider, key string) error {
 		return err
 	}
 
+	// API key and OAuth credentials are mutually exclusive per provider.
 	creds.Providers[provider] = ProviderCredential{APIKey: key}
+
+	return m.Save(creds)
+}
+
+// SetOAuth stores OAuth credentials for the given provider.
+func (m *Manager) SetOAuth(provider string, oauth *OAuthCredential) error {
+	if oauth == nil {
+		return errors.New("oauth credentials cannot be nil")
+	}
+	if oauth.AccessToken == "" {
+		return errors.New("oauth access token cannot be empty")
+	}
+
+	creds, err := m.Load()
+	if err != nil {
+		return err
+	}
+
+	// API key and OAuth credentials are mutually exclusive per provider.
+	creds.Providers[provider] = ProviderCredential{
+		OAuth: &OAuthCredential{
+			AccessToken:  oauth.AccessToken,
+			RefreshToken: oauth.RefreshToken,
+			TokenType:    oauth.TokenType,
+			Scope:        oauth.Scope,
+			ExpiryUnix:   oauth.ExpiryUnix,
+		},
+	}
 
 	return m.Save(creds)
 }
@@ -131,6 +160,28 @@ func (m *Manager) GetKey(provider string) (string, error) {
 	}
 
 	return pc.APIKey, nil
+}
+
+// GetOAuth returns the stored OAuth credential for the given provider.
+// Returns nil if no OAuth credential is stored.
+func (m *Manager) GetOAuth(provider string) (*OAuthCredential, error) {
+	creds, err := m.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	pc, ok := creds.Providers[provider]
+	if !ok || pc.OAuth == nil {
+		return nil, nil
+	}
+
+	return &OAuthCredential{
+		AccessToken:  pc.OAuth.AccessToken,
+		RefreshToken: pc.OAuth.RefreshToken,
+		TokenType:    pc.OAuth.TokenType,
+		Scope:        pc.OAuth.Scope,
+		ExpiryUnix:   pc.OAuth.ExpiryUnix,
+	}, nil
 }
 
 // RemoveKey deletes the stored credential for a provider.
@@ -154,7 +205,9 @@ func (m *Manager) ListProviders() ([]string, error) {
 
 	providers := make([]string, 0, len(creds.Providers))
 	for name, pc := range creds.Providers {
-		if pc.APIKey == "" {
+		hasAPIKey := pc.APIKey != ""
+		hasOAuth := pc.OAuth != nil && (pc.OAuth.AccessToken != "" || pc.OAuth.RefreshToken != "")
+		if !hasAPIKey && !hasOAuth {
 			continue
 		}
 		providers = append(providers, name)
@@ -176,7 +229,7 @@ func EnvVarForProvider(provider string) string {
 	return providerEnvVars[provider]
 }
 
-// supportedProviders is the canonical list of providers that require API keys.
+// supportedProviders is the canonical list of providers managed by tapes auth.
 var supportedProviders = []string{"openai", "anthropic"}
 
 // SupportedProviders returns a copy of the supported provider list.

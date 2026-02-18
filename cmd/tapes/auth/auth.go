@@ -1,8 +1,9 @@
-// Package authcmder provides the auth command for storing API credentials.
+// Package authcmder provides the auth command for storing provider credentials.
 package authcmder
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,11 +15,15 @@ import (
 	"github.com/papercomputeco/tapes/pkg/credentials"
 )
 
-const authLongDesc string = `Store API credentials for LLM providers.
+const authLongDesc string = `Store credentials for LLM providers.
 
 Credentials are stored in credentials.toml in the .tapes/ directory and
 automatically injected as environment variables when launching agents
 via tapes start.
+
+OpenAI OAuth credentials can also be stored with --oauth. OAuth
+credentials are currently stored for future use and are not yet used by
+runtime consumers.
 
 For OpenAI, use a service account key (sk-svcacct-...) with "All"
 permissions from platform.openai.com/api-keys. Personal project keys
@@ -28,16 +33,20 @@ Supported providers: openai, anthropic
 
 Examples:
   tapes auth openai              Prompt for OpenAI API key
+  tapes auth openai --api-key    Force API key flow
+  tapes auth openai --oauth      Authenticate OpenAI with OAuth browser flow
   tapes auth anthropic           Prompt for Anthropic API key
   tapes auth --list              List stored credentials
   tapes auth --remove openai     Remove stored OpenAI credentials
   echo $KEY | tapes auth openai  Pipe API key from stdin`
 
-const authShortDesc string = "Store API credentials for LLM providers"
+const authShortDesc string = "Store credentials for LLM providers"
 
 func NewAuthCmd() *cobra.Command {
 	var listFlag bool
 	var removeFlag string
+	var oauthFlag bool
+	var apiKeyFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "auth [provider]",
@@ -57,7 +66,7 @@ func NewAuthCmd() *cobra.Command {
 					return fmt.Errorf("provider argument required\n\nSupported providers: %s",
 						strings.Join(credentials.SupportedProviders(), ", "))
 				}
-				return runAuth(args[0], configDir)
+				return runAuth(args[0], configDir, oauthFlag, apiKeyFlag)
 			}
 		},
 		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -70,16 +79,50 @@ func NewAuthCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&listFlag, "list", false, "List stored credentials")
 	cmd.Flags().StringVar(&removeFlag, "remove", "", "Remove stored credentials for a provider")
+	cmd.Flags().BoolVar(&oauthFlag, "oauth", false, "Use OAuth browser flow (openai only)")
+	cmd.Flags().BoolVar(&apiKeyFlag, "api-key", false, "Use API key flow")
 
 	return cmd
 }
 
-func runAuth(provider, configDir string) error {
+var openAIOAuthCredentialFn = func() (*credentials.OAuthCredential, error) {
+	return runOpenAIOAuthFlow(context.Background(), os.Stdout, nil, loadOpenAIOAuthConfig())
+}
+
+func runAuth(provider, configDir string, oauthMode, apiKeyMode bool) error {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 
 	if !credentials.IsSupportedProvider(provider) {
 		return fmt.Errorf("unsupported provider: %q\n\nSupported providers: %s",
 			provider, strings.Join(credentials.SupportedProviders(), ", "))
+	}
+
+	if oauthMode && apiKeyMode {
+		return errors.New("flags --oauth and --api-key are mutually exclusive")
+	}
+
+	if oauthMode && provider != "openai" {
+		return errors.New("flag --oauth is only supported for provider 'openai'")
+	}
+
+	mgr, err := credentials.NewManager(configDir)
+	if err != nil {
+		return fmt.Errorf("loading credentials: %w", err)
+	}
+
+	if oauthMode {
+		oauthCred, err := openAIOAuthCredentialFn()
+		if err != nil {
+			return fmt.Errorf("openai oauth: %w", err)
+		}
+		if err := mgr.SetOAuth(provider, oauthCred); err != nil {
+			return err
+		}
+
+		fmt.Printf("Stored %s credentials (oauth)\n", provider)
+		fmt.Println("OAuth credentials are stored for now; runtime consumption is not enabled yet.")
+
+		return nil
 	}
 
 	apiKey, err := readAPIKey(provider)
@@ -90,11 +133,6 @@ func runAuth(provider, configDir string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return errors.New("API key cannot be empty")
-	}
-
-	mgr, err := credentials.NewManager(configDir)
-	if err != nil {
-		return fmt.Errorf("loading credentials: %w", err)
 	}
 
 	if err := mgr.SetKey(provider, apiKey); err != nil {
@@ -125,6 +163,10 @@ func runList(configDir string) error {
 	if err != nil {
 		return err
 	}
+	creds, err := mgr.Load()
+	if err != nil {
+		return err
+	}
 
 	if len(providers) == 0 {
 		fmt.Println("No stored credentials.")
@@ -136,10 +178,15 @@ func runList(configDir string) error {
 	fmt.Println("Stored credentials:")
 	for _, p := range providers {
 		envVar := credentials.EnvVarForProvider(p)
+		pc := creds.Providers[p]
+		credentialType := "api_key"
+		if pc.OAuth != nil && (pc.OAuth.AccessToken != "" || pc.OAuth.RefreshToken != "") {
+			credentialType = "oauth"
+		}
 		if envVar != "" {
-			fmt.Printf("  %s → %s\n", p, envVar)
+			fmt.Printf("  %s (%s) → %s\n", p, credentialType, envVar)
 		} else {
-			fmt.Printf("  %s\n", p)
+			fmt.Printf("  %s (%s)\n", p, credentialType)
 		}
 	}
 

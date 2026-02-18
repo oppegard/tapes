@@ -1,4 +1,4 @@
-package authcmder_test
+package authcmder
 
 import (
 	"testing"
