@@ -8,4 +8,5 @@
 #   - Denounce with minus prefix: -username or -platform:username.
 #   - Optional details after a space following the handle.
 grouville grouville
+nickytonline nickytonline
 oppegard oppegard
