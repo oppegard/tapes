@@ -26,7 +26,7 @@ const (
 	roleUser            = "user"
 	groupIDPrefix       = "group:"
 	groupWindow         = time.Hour
-	sessionCacheTTL     = 10 * time.Second
+	sessionCacheTTL     = 30 * time.Second
 	messageGroupWindow  = 5 * time.Second
 	maxGroupedTextChars = 4000
 )
@@ -411,7 +411,7 @@ func firstNonEmptyModel(members []sessionCandidate) string {
 }
 
 func (q *Query) Overview(ctx context.Context, filters Filters) (*Overview, error) {
-	candidates, err := q.loadSessionCandidates(ctx, false)
+	candidates, err := q.loadSessionCandidates(ctx, true)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +473,25 @@ func (q *Query) SessionDetail(ctx context.Context, sessionID string) (*SessionDe
 		return q.groupSessionDetail(ctx, sessionID)
 	}
 
+	// Try cache first to avoid N+1 ancestry queries.
+	candidates, err := q.loadSessionCandidates(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range candidates {
+		if c.summary.ID == sessionID {
+			messages, toolFrequency := q.buildSessionMessages(c.nodes)
+			grouped := buildGroupedMessages(messages)
+			return &SessionDetail{
+				Summary:         c.summary,
+				Messages:        messages,
+				GroupedMessages: grouped,
+				ToolFrequency:   toolFrequency,
+			}, nil
+		}
+	}
+
+	// Fallback: session is brand-new and not yet in cache.
 	leaf, err := q.client.Node.Get(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
@@ -490,14 +509,12 @@ func (q *Query) SessionDetail(ctx context.Context, sessionID string) (*SessionDe
 
 	messages, toolFrequency := q.buildSessionMessages(nodes)
 	grouped := buildGroupedMessages(messages)
-	detail := &SessionDetail{
+	return &SessionDetail{
 		Summary:         summary,
 		Messages:        messages,
 		GroupedMessages: grouped,
 		ToolFrequency:   toolFrequency,
-	}
-
-	return detail, nil
+	}, nil
 }
 
 func (q *Query) groupSessionDetail(ctx context.Context, sessionID string) (*SessionDetail, error) {
@@ -1242,7 +1259,7 @@ func SortSessions(sessions []SessionSummary, sortKey, sortDir string) {
 }
 
 func (q *Query) AnalyticsOverview(ctx context.Context, filters Filters) (*AnalyticsOverview, error) {
-	candidates, err := q.loadSessionCandidates(ctx, false)
+	candidates, err := q.loadSessionCandidates(ctx, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1287,15 +1304,15 @@ func (q *Query) AnalyticsOverview(ctx context.Context, filters Filters) (*Analyt
 		for _, member := range group.members {
 			for _, n := range member.nodes {
 				blocks, _ := parseContentBlocks(n.Content)
-				for _, tool := range extractToolCalls(blocks) {
+				tools := extractToolCalls(blocks)
+				hasErr := blocksHaveToolError(blocks)
+				for _, tool := range tools {
 					if _, ok := toolGlobal[tool]; !ok {
 						toolGlobal[tool] = &ToolMetric{Name: tool}
 					}
 					toolGlobal[tool].Count++
 					sessionTools[tool] = true
-				}
-				if blocksHaveToolError(blocks) {
-					for _, tool := range extractToolCalls(blocks) {
+					if hasErr {
 						toolErrors[tool]++
 					}
 				}
@@ -1400,6 +1417,18 @@ func (q *Query) SessionAnalytics(ctx context.Context, sessionID string) (*Sessio
 		return q.groupSessionAnalytics(ctx, sessionID)
 	}
 
+	// Try cache first to avoid N+1 ancestry queries.
+	candidates, err := q.loadSessionCandidates(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range candidates {
+		if c.summary.ID == sessionID {
+			return buildSessionAnalytics(sessionID, c.nodes), nil
+		}
+	}
+
+	// Fallback: session is brand-new and not yet in cache.
 	leaf, err := q.client.Node.Get(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
